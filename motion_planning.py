@@ -24,6 +24,7 @@ class States(Enum):
 
 class MotionPlanning(Drone):
 
+    # Optional settable goal lat lon position
     def __init__(self, connection):
         super().__init__(connection)
 
@@ -120,13 +121,25 @@ class MotionPlanning(Drone):
         self.target_position[2] = TARGET_ALTITUDE
 
         # TODO: read lat0, lon0 from colliders into floating point values
+
+        # Read the first line of the colliders.csv file and split it by its lat and lon value.
+        with open('colliders.csv') as data:
+            lat_lon_line = data.readline().split(",")
+
+        # Remove the descriptors from the lat and lon values.
+        lat = float(lat_lon_line[0].replace("lat0 ", ""))
+        lon = float(lat_lon_line[1].replace("lon0 ", ""))
         
         # TODO: set home position to (lon0, lat0, 0)
+        # Set the home location to the parsed lat lon values
+        self.set_home_position(lon, lat, 0)
 
         # TODO: retrieve current global position
- 
+        global_position = self.global_position
+
         # TODO: convert to current local position using global_to_local()
-        
+        local_position = global_to_local(global_position, self.global_home)
+
         print('global home {0}, position {1}, local position {2}'.format(self.global_home, self.global_position,
                                                                          self.local_position))
         # Read in obstacle map
@@ -136,20 +149,41 @@ class MotionPlanning(Drone):
         grid, north_offset, east_offset = create_grid(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
         print("North offset = {0}, east offset = {1}".format(north_offset, east_offset))
         # Define starting point on the grid (this is just grid center)
-        grid_start = (-north_offset, -east_offset)
+        grid_start = [-north_offset, -east_offset]
         # TODO: convert start position to current position rather than map center
-        
+        start = [int(local_position[0] + grid_start[0]), int(local_position[1] + grid_start[1])]
         # Set goal as some arbitrary position on the grid
-        grid_goal = (-north_offset + 10, -east_offset + 10)
         # TODO: adapt to set goal as latitude / longitude position and convert
+
+        # Goal location is set to the Harry Bridges Plaza
+        goal_location = [-122.393333, 37.795888, 0]
+
+        # Convert goal location to the local location
+        goal_location_local_value = global_to_local(goal_location, self.global_home)
+
+        # Defining the grid location base on the grid offset
+        goal_location_with_offset = (int(goal_location_local_value[0] + grid_start[0]),
+                                     int(goal_location_local_value[1] + grid_start[1]))
 
         # Run A* to find a path from start to goal
         # TODO: add diagonal motions with a cost of sqrt(2) to your A* implementation
         # or move to a different search space such as a graph (not done here)
-        print('Local Start and Goal: ', grid_start, grid_goal)
-        path, _ = a_star(grid, heuristic, grid_start, grid_goal)
+        print('Local Start and Goal: ', start, goal_location_with_offset)
+        path, _ = a_star(grid, heuristic, start, goal_location_with_offset)
+
         # TODO: prune path to minimize number of waypoints
         # TODO (if you're feeling ambitious): Try a different approach altogether!
+
+        i = 0
+
+        # Iterate through all the point in the the points list and remove any unneeded points.
+        while i < len(path) - 2:
+            remove_point = self.check_for_unneeded_point(path[i], path[i+1], path[i+2])
+
+            # If an unneeded point is found, remove it from the points list
+            if remove_point:
+                path.remove(path[i+1])
+            i += 1
 
         # Convert path to waypoints
         waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in path]
@@ -157,6 +191,17 @@ class MotionPlanning(Drone):
         self.waypoints = waypoints
         # TODO: send waypoints to sim (this is just for visualization of waypoints)
         self.send_waypoints()
+
+    # New method for checking if a point in unneeded. If it is, this method returns True and the point at address i+1
+    # should be removed from the points list.
+    def check_for_unneeded_point(self, point1, point2, point3):
+        epsilon = 1e-2
+        det = point1[0] * (point2[1] - point3[1]) + point2[0] * (point3[1] - point1[1]) + point3[0] * (point1[1] - point2[1])
+
+        if np.abs(det) <= epsilon:
+            return True
+
+        return False
 
     def start(self):
         self.start_log("Logs", "NavLog.txt")
@@ -175,6 +220,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5760, help='Port number')
     parser.add_argument('--host', type=str, default='127.0.0.1', help="host address, i.e. '127.0.0.1'")
+
     args = parser.parse_args()
 
     conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), timeout=60)
